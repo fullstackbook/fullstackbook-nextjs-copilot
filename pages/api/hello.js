@@ -2,10 +2,8 @@
 
 import db from "../../db"
 
-export default function handler(req, res) {
-  db.query('SELECT NOW()', (err, res) => {
-    console.log(err, res)
-    db.end()
-  })
+export default async function handler(req, res) {
+  const result = await db.query('SELECT NOW()')
+  console.log(result.rows);
   res.status(200).json({ name: 'John Doe' })
 }
