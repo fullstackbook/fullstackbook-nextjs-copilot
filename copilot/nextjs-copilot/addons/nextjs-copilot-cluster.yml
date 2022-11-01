@@ -1,0 +1,123 @@
+Parameters:
+  App:
+    Type: String
+    Description: Your application's name.
+  Env:
+    Type: String
+    Description: The environment name your service, job, or workflow is being deployed to.
+  Name:
+    Type: String
+    Description: The name of the service, job, or workflow being deployed.
+  # Customize your Aurora Serverless cluster by setting the default value of the following parameters.
+  nextjscopilotclusterDBName:
+    Type: String
+    Description: The name of the initial database to be created in the DB cluster.
+    Default: nextjscopilot
+    # Cannot have special characters
+    # Naming constraints: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html#RDS_Limits.Constraints
+  nextjscopilotclusterDBAutoPauseSeconds:
+    Type: Number
+    Description: The duration in seconds before the cluster pauses.
+    Default: 1000
+Mappings:
+  nextjscopilotclusterEnvScalingConfigurationMap: 
+    test:
+      "DBMinCapacity": 2 # AllowedValues: [2, 4, 8, 16, 32, 64, 192, 384]
+      "DBMaxCapacity": 8 # AllowedValues: [2, 4, 8, 16, 32, 64, 192, 384]
+      
+    All:
+      "DBMinCapacity": 2 # AllowedValues: [2, 4, 8, 16, 32, 64, 192, 384]
+      "DBMaxCapacity": 8 # AllowedValues: [2, 4, 8, 16, 32, 64, 192, 384]
+      
+
+Resources:
+  nextjscopilotclusterDBSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: Group of Copilot private subnets for Aurora cluster.
+      SubnetIds:
+        !Split [',', { 'Fn::ImportValue': !Sub '${App}-${Env}-PrivateSubnets' }]
+  nextjscopilotclusterSecurityGroup:
+    Metadata:
+      'aws:copilot:description': 'A security group for your workload to access the DB cluster nextjscopilotcluster'
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub 'The Security Group for ${Name} to access DB cluster nextjscopilotcluster.'
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${App}-${Env}-VpcId'
+      Tags:
+        - Key: Name
+          Value: !Sub 'copilot-${App}-${Env}-${Name}-Aurora'
+  nextjscopilotclusterDBClusterSecurityGroup:
+    Metadata:
+      'aws:copilot:description': 'A security group for your DB cluster nextjscopilotcluster'
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: The Security Group for the database cluster.
+      SecurityGroupIngress:
+        - ToPort: 5432
+          FromPort: 5432
+          IpProtocol: tcp
+          Description: !Sub 'From the Aurora Security Group of the workload ${Name}.'
+          SourceSecurityGroupId: !Ref nextjscopilotclusterSecurityGroup
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${App}-${Env}-VpcId'
+  nextjscopilotclusterAuroraSecret:
+    Metadata:
+      'aws:copilot:description': 'A Secrets Manager secret to store your DB credentials'
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub Aurora main user secret for ${AWS::StackName}
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "postgres"}'
+        GenerateStringKey: "password"
+        ExcludePunctuation: true
+        IncludeSpace: false
+        PasswordLength: 16
+  nextjscopilotclusterDBClusterParameterGroup:
+    Metadata:
+      'aws:copilot:description': 'A DB parameter group for engine configuration values'
+    Type: 'AWS::RDS::DBClusterParameterGroup'
+    Properties:
+      Description: !Ref 'AWS::StackName'
+      Family: 'aurora-postgresql10'
+      Parameters:
+        client_encoding: 'UTF8'
+  nextjscopilotclusterDBCluster:
+    Metadata:
+      'aws:copilot:description': 'The nextjscopilotcluster Aurora Serverless database cluster'
+    Type: 'AWS::RDS::DBCluster'
+    Properties:
+      MasterUsername:
+        !Join [ "",  [ '{{resolve:secretsmanager:', !Ref nextjscopilotclusterAuroraSecret, ":SecretString:username}}" ]]
+      MasterUserPassword:
+        !Join [ "",  [ '{{resolve:secretsmanager:', !Ref nextjscopilotclusterAuroraSecret, ":SecretString:password}}" ]]
+      DatabaseName: !Ref nextjscopilotclusterDBName
+      Engine: 'aurora-postgresql'
+      EngineVersion: '10.12'
+      EngineMode: serverless
+      DBClusterParameterGroupName: !Ref nextjscopilotclusterDBClusterParameterGroup
+      DBSubnetGroupName: !Ref nextjscopilotclusterDBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref nextjscopilotclusterDBClusterSecurityGroup
+      ScalingConfiguration:
+        AutoPause: true
+        # Replace "All" below with "!Ref Env" to set different autoscaling limits per environment.
+        MinCapacity: !FindInMap [nextjscopilotclusterEnvScalingConfigurationMap, All, DBMinCapacity]
+        MaxCapacity: !FindInMap [nextjscopilotclusterEnvScalingConfigurationMap, All, DBMaxCapacity]
+        SecondsUntilAutoPause: !Ref nextjscopilotclusterDBAutoPauseSeconds
+  nextjscopilotclusterSecretAuroraClusterAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref nextjscopilotclusterAuroraSecret
+      TargetId: !Ref nextjscopilotclusterDBCluster
+      TargetType: AWS::RDS::DBCluster
+Outputs:
+  nextjscopilotclusterSecret: # injected as NEXTJSCOPILOTCLUSTER_SECRET environment variable by Copilot.
+    Description: "The JSON secret that holds the database username and password. Fields are 'host', 'port', 'dbname', 'username', 'password', 'dbClusterIdentifier' and 'engine'"
+    Value: !Ref nextjscopilotclusterAuroraSecret
+  nextjscopilotclusterSecurityGroup:
+    Description: "The security group to attach to the workload."
+    Value: !Ref nextjscopilotclusterSecurityGroup
